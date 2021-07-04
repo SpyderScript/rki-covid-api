@@ -1,45 +1,61 @@
 import axios from "axios";
-import XLSX from "xlsx";
-import { ResponseData } from "./response-data";
+import parse from "csv-parse";
 
-function parseRValue(data: ArrayBuffer): { r: number; date: Date } | null {
-  var workbook = XLSX.read(data, { type: "buffer", cellDates: true });
-  const sheet = workbook.Sheets[workbook.SheetNames[1]];
-  const json = XLSX.utils.sheet_to_json(sheet);
+import {ResponseData} from "./response-data";
 
-  const latestEntry = json[json.length - 1];
-  const dateString =
-    latestEntry["Datum des Erkrankungsbeginns"] ||
-    latestEntry["Datum des Erkrankungs-beginns"];
-  let rValue =
-    latestEntry["Punktschätzer des 4-Tage R-Wertes"] ||
-    latestEntry["Punktschätzer der 4-Tage R-Wert"] ||
-    latestEntry["Punktschätzer des 4-Tage-R-Wertes"];
+import stream from "stream";
 
-  if (typeof rValue === "string" || rValue instanceof String) {
-    rValue = parseFloat(rValue.replace(",", "."));
-  }
 
-  const pattern = /(\d{2})\.(\d{2})\.(\d{4})/;
-  const date = new Date(dateString.replace(pattern, "$3-$2-$1"));
+async function parseRValue(data: string): Promise<{ r: number; date: Date } | null> {
+    const parser = parse(data)
 
-  return {
-    r: rValue,
-    date,
-  };
+    const records = []
+
+    parser.on('readable', () => {
+        let record;
+        while (record = parser.read()) {
+            records.push(record)
+        }
+    })
+
+    await stream.promises.finished(parser);
+
+    const keys = records[0];
+
+    const latestValues = records[records.length - 1] as []
+
+    let latestEntry = [];
+    latestEntry = latestValues.reduce((previousValue, currentValue, currentIndex) => {
+        latestEntry[keys[currentIndex]] = currentValue;
+        return latestEntry;
+    }, [])
+
+    const dateString = latestEntry["Datum"];
+    let rValue = latestEntry["PS_4_Tage_R_Wert"];
+
+    if (typeof rValue === "string" || rValue instanceof String) {
+        rValue = parseFloat(rValue.replace(",", "."));
+    }
+
+    const pattern = /(\d{2})\.(\d{2})\.(\d{4})/;
+    const date = new Date(dateString.replace(pattern, "$3-$2-$1"));
+
+    return {
+        r: rValue,
+        date: date,
+    };
 }
 
 export async function getRValue(): Promise<ResponseData<number>> {
-  const response = await axios.get(
-    `https://www.rki.de/DE/Content/InfAZ/N/Neuartiges_Coronavirus/Projekte_RKI/Nowcasting_Zahlen.xlsx?__blob=publicationFile`,
-    {
-      responseType: "arraybuffer",
-    }
-  );
-  const data = response.data;
-  const rData = parseRValue(data);
-  return {
-    data: rData.r,
-    lastUpdate: rData.date,
-  };
+    const response = await axios.get(
+        `https://raw.githubusercontent.com/robert-koch-institut/SARS-CoV-2-Nowcasting_und_-R-Schaetzung/main/Nowcast_R_aktuell.csv`
+    );
+
+    const data = response.data;
+    const rData = await parseRValue(data);
+
+    return {
+        data: rData.r,
+        lastUpdate: rData.date,
+    };
 }
